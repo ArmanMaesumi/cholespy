@@ -32,8 +32,9 @@ public:
      * @param x Array of nonzero entries
      * @param type The type of the matrix representation. Can be COO, CSC or CSR
      * @param cpu Whether or not to run the CPU version of the solver.
+     * @param pin_memory Whether or not to pin the host memory for faster transfer between CPU/GPU
      */
-    CholeskySolver(int n_rows, int nnz, int *ii, int *jj, double *x, MatrixType type, bool cpu);
+    CholeskySolver(int n_rows, int nnz, int *ii, int *jj, double *x, MatrixType type, bool cpu, bool pin_memory);
 
     ~CholeskySolver();
 
@@ -46,6 +47,15 @@ public:
     // Return whether the solver solves on the CPU or on the GPU
     bool is_cpu() { return m_cpu; };
 
+    // Alias for the destructor
+    void deallocate_memory();
+
+    // Move memory to the host (RAM)
+    void move_memory_to_host();
+
+    // Move memory to the device from RAM
+    void move_memory_to_device();
+
 private:
 
     // Factorize the CSC matrix using CHOLMOD
@@ -57,12 +67,16 @@ private:
 	// Solve one triangular system
     void launch_kernel(bool lower, CUdeviceptr x);
 
-    int m_nrhs = 0;
-    int m_n;
-    int m_nnz;
+    int m_nrhs = 0; // number of right-hand sides
+    int m_n;        // n rows
+    int m_nnz;      // number of non-zero entries
 
     // CPU or GPU solver?
     bool m_cpu;
+    
+    bool m_deallocated; // has the memory been deallocated?
+    bool m_on_host; // is the data on host?
+    bool m_pin_host; // should we pin host memory?
 
     // Pointers used for the analysis, freed if solving on the GPU, kept if solving on the CPU
     cholmod_factor *m_factor;
@@ -96,4 +110,19 @@ private:
 
     // Temporary array used for solving the triangular systems in place
     CUdeviceptr m_tmp_d = 0;
+
+    // Number of non-zero entries in the factorization (from CHOLMOD)
+    int m_fact_nrows;
+    int m_fact_nnz;
+
+    // Buffers for moving memory to and from host/gpu:
+    int* m_perm_h;
+    int* m_lower_rows_h;
+    int* m_lower_cols_h;
+    Float* m_lower_data_h;
+    int* m_upper_rows_h;
+    int* m_upper_cols_h;
+    Float* m_upper_data_h;
+    int* m_lower_levels_h;
+    int* m_upper_levels_h;
 };

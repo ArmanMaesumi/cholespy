@@ -149,8 +149,9 @@ void csc_sum_duplicates(int n_rows, int &m_nnz, int **col_ptr, int **rows, doubl
 }
 
 template <typename Float>
-CholeskySolver<Float>::CholeskySolver(int n_rows, int nnz, int *ii, int *jj, double *x, MatrixType type, bool cpu) : m_n(n_rows), m_nnz(nnz), m_cpu(cpu) {
-
+CholeskySolver<Float>::CholeskySolver(int n_rows, int nnz, int *ii, int *jj, double *x, MatrixType type, bool cpu, bool pin_memory) : m_n(n_rows), m_nnz(nnz), m_cpu(cpu), m_pin_host(pin_memory) {
+    m_deallocated = false; // flag for the destructor
+    m_on_host = false; // flag for the move_memory_to_host method
 
     // Placeholders for the CSC matrix data
     int *col_ptr, *rows;
@@ -194,6 +195,19 @@ CholeskySolver<Float>::CholeskySolver(int n_rows, int nnz, int *ii, int *jj, dou
         free(col_ptr);
         free(rows);
         free(data);
+    }
+
+    // allocate cpu buffers ahead of time if indicated
+    if (pin_memory) {
+        m_perm_h =          (int*)  malloc(m_n*sizeof(int));
+        m_lower_rows_h =    (int*)  malloc((1+m_fact_nrows)*sizeof(int));
+        m_lower_cols_h =    (int*)  malloc(m_fact_nnz*sizeof(int));
+        m_lower_data_h =    (Float*)malloc(m_fact_nnz*sizeof(Float));
+        m_upper_rows_h =    (int*)  malloc((1+m_fact_nrows)*sizeof(int));
+        m_upper_cols_h =    (int*)  malloc(m_fact_nnz*sizeof(int));
+        m_upper_data_h =    (Float*)malloc(m_fact_nnz*sizeof(Float));
+        m_lower_levels_h =  (int*)  malloc(m_fact_nrows*sizeof(int));
+        m_upper_levels_h =  (int*)  malloc(m_fact_nrows*sizeof(int));
     }
 }
 
@@ -272,6 +286,9 @@ void CholeskySolver<Float>::factorize(int *col_ptr, int *rows, double *data) {
 
         int n_rows = lower_csc->nrow;
         int n_entries = lower_csc->nzmax;
+
+        m_fact_nrows = n_rows;
+        m_fact_nnz = n_entries;
 
         // The CSC representation of a matrix is the same as the CSR of its transpose
         analyze_cuda(n_rows, n_entries, lower_csr->p, lower_csr->i, csr_data, true);
@@ -414,7 +431,6 @@ void CholeskySolver<Float>::launch_kernel(bool lower, CUdeviceptr x) {
 
 template <typename Float>
 void CholeskySolver<Float>::solve_cuda(int n_rhs, CUdeviceptr b, CUdeviceptr x) {
-
     if (n_rhs != m_nrhs) {
         if (n_rhs > 128)
             throw std::invalid_argument("The number of RHS should be less than 128.");
@@ -464,26 +480,144 @@ void CholeskySolver<Float>::solve_cpu(int n_rhs, Float *b, Float *x) {
 
 template <typename Float>
 CholeskySolver<Float>::~CholeskySolver() {
+    deallocate_memory();
+}
+
+template <typename Float>
+void CholeskySolver<Float>::deallocate_memory() {
+    if (m_deallocated)
+        return;
+
     if (m_cpu){
         cholmod_free_factor(&m_factor, &m_common);
         cholmod_finish(&m_common);
     } else {
         scoped_set_context guard(cu_context);
 
-        cuda_check(cuMemFree(m_processed_rows_d));
-        cuda_check(cuMemFree(m_stack_id_d));
-        cuda_check(cuMemFree(m_perm_d));
-        cuda_check(cuMemFree(m_tmp_d));
-        cuda_check(cuMemFree(m_lower_rows_d));
-        cuda_check(cuMemFree(m_lower_cols_d));
-        cuda_check(cuMemFree(m_lower_data_d));
-        cuda_check(cuMemFree(m_upper_rows_d));
-        cuda_check(cuMemFree(m_upper_cols_d));
-        cuda_check(cuMemFree(m_upper_data_d));
-        cuda_check(cuMemFree(m_lower_levels_d));
-        cuda_check(cuMemFree(m_upper_levels_d));
+        if (!m_on_host) { // only call free if we havent moved to cpu buffers
+            cuda_check(cuMemFree(m_processed_rows_d));
+            cuda_check(cuMemFree(m_stack_id_d));
+            cuda_check(cuMemFree(m_perm_d));
+            cuda_check(cuMemFree(m_tmp_d));
+            cuda_check(cuMemFree(m_lower_rows_d));
+            cuda_check(cuMemFree(m_lower_cols_d));
+            cuda_check(cuMemFree(m_lower_data_d));
+            cuda_check(cuMemFree(m_upper_rows_d));
+            cuda_check(cuMemFree(m_upper_cols_d));
+            cuda_check(cuMemFree(m_upper_data_d));
+            cuda_check(cuMemFree(m_lower_levels_d));
+            cuda_check(cuMemFree(m_upper_levels_d));
+        }
+
+        free(m_perm_h);
+        free(m_lower_rows_h);
+        free(m_lower_cols_h);
+        free(m_lower_data_h);
+        free(m_upper_rows_h);
+        free(m_upper_cols_h);
+        free(m_upper_data_h);
+        free(m_lower_levels_h);
+        free(m_upper_levels_h);
     }
+
+    m_deallocated = true;
 }
+
+// to_cpu()
+template <typename Float>
+void CholeskySolver<Float>::move_memory_to_host() {
+    if (m_cpu || m_on_host || m_deallocated) return;
+
+    scoped_set_context guard(cu_context);
+
+    // Allocate host memory if memory is not pinned
+    if (!m_pin_host){
+        m_perm_h =          (int*)  malloc(m_n*sizeof(int));
+        m_lower_rows_h =    (int*)  malloc((1+m_fact_nrows)*sizeof(int));
+        m_lower_cols_h =    (int*)  malloc(m_fact_nnz*sizeof(int));
+        m_lower_data_h =    (Float*)malloc(m_fact_nnz*sizeof(Float));
+        m_upper_rows_h =    (int*)  malloc((1+m_fact_nrows)*sizeof(int));
+        m_upper_cols_h =    (int*)  malloc(m_fact_nnz*sizeof(int));
+        m_upper_data_h =    (Float*)malloc(m_fact_nnz*sizeof(Float));
+        m_lower_levels_h =  (int*)  malloc(m_fact_nrows*sizeof(int));
+        m_upper_levels_h =  (int*)  malloc(m_fact_nrows*sizeof(int));
+    }
+
+    // Copy data from device to host
+    cuda_check(cuMemcpyDtoH(m_perm_h, m_perm_d,                 m_n*sizeof(int)));
+    cuda_check(cuMemcpyDtoH(m_lower_rows_h, m_lower_rows_d,     (1+m_fact_nrows)*sizeof(int)));
+    cuda_check(cuMemcpyDtoH(m_lower_cols_h, m_lower_cols_d,     m_fact_nnz*sizeof(int)));
+    cuda_check(cuMemcpyDtoH(m_lower_data_h, m_lower_data_d,     m_fact_nnz*sizeof(Float)));
+    cuda_check(cuMemcpyDtoH(m_upper_rows_h, m_upper_rows_d,     (1+m_fact_nrows)*sizeof(int)));
+    cuda_check(cuMemcpyDtoH(m_upper_cols_h, m_upper_cols_d,     m_fact_nnz*sizeof(int)));
+    cuda_check(cuMemcpyDtoH(m_upper_data_h, m_upper_data_d,     m_fact_nnz*sizeof(Float)));
+    cuda_check(cuMemcpyDtoH(m_lower_levels_h, m_lower_levels_d, m_fact_nrows*sizeof(int)));
+    cuda_check(cuMemcpyDtoH(m_upper_levels_h, m_upper_levels_d, m_fact_nrows*sizeof(int)));
+
+    // Free device memory:
+    cuda_check(cuMemFree(m_perm_d));
+    cuda_check(cuMemFree(m_lower_rows_d));
+    cuda_check(cuMemFree(m_lower_cols_d));
+    cuda_check(cuMemFree(m_lower_data_d));
+    cuda_check(cuMemFree(m_upper_rows_d));
+    cuda_check(cuMemFree(m_upper_cols_d));
+    cuda_check(cuMemFree(m_upper_data_d));
+    cuda_check(cuMemFree(m_lower_levels_d));
+    cuda_check(cuMemFree(m_upper_levels_d));
+    // These two need to be re-allocated later, but we dont need to save their values
+    cuda_check(cuMemFree(m_processed_rows_d));
+    cuda_check(cuMemFree(m_stack_id_d));
+
+    m_on_host = true;
+}
+
+// to_gpu()
+template <typename Float>
+void CholeskySolver<Float>::move_memory_to_device() {
+    if (m_cpu || !m_on_host) return;
+
+    scoped_set_context guard(cu_context);
+
+    // Allocate device memory
+    cuda_check(cuMemAlloc(&m_processed_rows_d,  m_n * sizeof(bool)));
+    cuda_check(cuMemAlloc(&m_stack_id_d,        sizeof(int)));
+    cuda_check(cuMemAlloc(&m_perm_d,            m_n * sizeof(int)));
+    cuda_check(cuMemAlloc(&m_lower_rows_d,      (1+m_fact_nrows)*sizeof(int)));
+    cuda_check(cuMemAlloc(&m_lower_cols_d,      m_fact_nnz*sizeof(int)));
+    cuda_check(cuMemAlloc(&m_lower_data_d,      m_fact_nnz*sizeof(Float)));
+    cuda_check(cuMemAlloc(&m_upper_rows_d,      (1+m_fact_nrows)*sizeof(int)));
+    cuda_check(cuMemAlloc(&m_upper_cols_d,      m_fact_nnz*sizeof(int)));
+    cuda_check(cuMemAlloc(&m_upper_data_d,      m_fact_nnz*sizeof(Float)));
+    cuda_check(cuMemAlloc(&m_lower_levels_d,    m_fact_nrows * sizeof(int)));
+    cuda_check(cuMemAlloc(&m_upper_levels_d,    m_fact_nrows * sizeof(int)));
+    
+    // Copy data from host to device
+    cuda_check(cuMemcpyHtoD(m_perm_d, m_perm_h,                 m_n*sizeof(int)));
+    cuda_check(cuMemcpyHtoD(m_lower_rows_d, m_lower_rows_h,     (1+m_fact_nrows)*sizeof(int)));
+    cuda_check(cuMemcpyHtoD(m_lower_cols_d, m_lower_cols_h,     m_fact_nnz*sizeof(int)));
+    cuda_check(cuMemcpyHtoD(m_lower_data_d, m_lower_data_h,     m_fact_nnz*sizeof(Float)));
+    cuda_check(cuMemcpyHtoD(m_upper_rows_d, m_upper_rows_h,     (1+m_fact_nrows)*sizeof(int)));
+    cuda_check(cuMemcpyHtoD(m_upper_cols_d, m_upper_cols_h,     m_fact_nnz*sizeof(int)));
+    cuda_check(cuMemcpyHtoD(m_upper_data_d, m_upper_data_h,     m_fact_nnz*sizeof(Float)));
+    cuda_check(cuMemcpyHtoD(m_lower_levels_d, m_lower_levels_h, m_fact_nrows*sizeof(int)));
+    cuda_check(cuMemcpyHtoD(m_upper_levels_d, m_upper_levels_h, m_fact_nrows*sizeof(int)));
+
+    // Free host memory if memory is not pinned
+    if (!m_pin_host) {
+        free(m_perm_h);
+        free(m_lower_rows_h);
+        free(m_lower_cols_h);
+        free(m_lower_data_h);
+        free(m_upper_rows_h);
+        free(m_upper_cols_h);
+        free(m_upper_data_h);
+        free(m_lower_levels_h);
+        free(m_upper_levels_h);
+    }
+    
+    m_on_host = false;
+}
+
 
 template class CholeskySolver<float>;
 template class CholeskySolver<double>;

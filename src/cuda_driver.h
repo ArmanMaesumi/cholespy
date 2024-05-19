@@ -25,9 +25,16 @@ extern CUresult (*cuLaunchKernel)(CUfunction f, unsigned int, unsigned int,
                                   void **);
 extern CUresult (*cuMemAlloc)(void **, size_t);
 extern CUresult (*cuMemFree)(void *);
+
+extern CUresult (*cuMemcpyDtoH)(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount);
+extern CUresult (*cuMemcpyHtoD)(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount);
 extern CUresult (*cuMemcpyAsync)(void *, const void *, size_t, CUstream);
+
 extern CUresult (*cuMemsetD32Async)(void *, unsigned int, size_t, CUstream);
+extern CUresult (*cuMemsetD32)(void *, unsigned int, size_t);
+extern CUresult (*cuMemsetD8)(void *, unsigned char, size_t);
 extern CUresult (*cuMemsetD8Async)(void *, unsigned char, size_t, CUstream);
+
 extern CUresult (*cuModuleGetFunction)(CUfunction *, CUmodule, const char *);
 extern CUresult (*cuModuleLoadData)(CUmodule *, const void *);
 extern CUresult (*cuModuleUnload)(CUmodule);
@@ -47,7 +54,7 @@ extern CUfunction solve_lower_double;
 extern CUfunction analysis_lower;
 extern CUfunction analysis_upper;
 
-extern bool init_cuda();
+extern bool init_cuda(int device_id);
 extern void shutdown_cuda();
 extern void cuda_check_impl(CUresult errval, const char *file, const int line);
 

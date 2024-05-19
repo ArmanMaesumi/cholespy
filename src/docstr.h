@@ -16,6 +16,7 @@ Parameters
 - x - The array of nonzero entries.
 - type - The matrix representation type, of type MatrixType. Available types
          are MatrixType.COO, MatrixType.CSC and MatrixType.CSR.
+- pin_memory - Whether to pin the CPU memory for faster transfer between CPU/GPU.
 )";
 
 const char *doc_matrix_type =

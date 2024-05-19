@@ -26,9 +26,16 @@ CUresult (*cuLaunchKernel)(CUfunction f, unsigned int, unsigned int,
                            void **) = nullptr;
 CUresult (*cuMemAlloc)(void **, size_t) = nullptr;
 CUresult (*cuMemFree)(void *) = nullptr;
+
+CUresult (*cuMemcpyDtoH)(void* dstHost, CUdeviceptr srcDevice, size_t ByteCount) = nullptr;
+CUresult (*cuMemcpyHtoD)(CUdeviceptr dstDevice, const void* srcHost, size_t ByteCount) = nullptr;
 CUresult (*cuMemcpyAsync)(void *, const void *, size_t, CUstream) = nullptr;
+
+CUresult (*cuMemsetD32)(void *, unsigned int, size_t) = nullptr;
 CUresult (*cuMemsetD32Async)(void *, unsigned int, size_t, CUstream) = nullptr;
 CUresult (*cuMemsetD8Async)(void *, unsigned char, size_t, CUstream) = nullptr;
+CUresult (*cuMemsetD8)(void *, unsigned char, size_t) = nullptr;
+
 CUresult (*cuModuleGetFunction)(CUfunction *, CUmodule, const char *) = nullptr;
 CUresult (*cuModuleLoadData)(CUmodule *, const void *) = nullptr;
 CUresult (*cuModuleUnload)(CUmodule) = nullptr;
@@ -55,7 +62,7 @@ void cuda_check_impl(CUresult errval, const char *file, const int line) {
     }
 }
 
-bool init_cuda() {
+bool init_cuda(int device_id) {
 
     if (handle)
         return true;
@@ -92,6 +99,10 @@ bool init_cuda() {
         LOAD(cuInit);
         LOAD(cuMemAlloc, "v2");
         LOAD(cuMemFree, "v2");
+        LOAD(cuMemcpyDtoH, "v2");
+        LOAD(cuMemcpyHtoD, "v2");
+        LOAD(cuMemsetD8, "v2");
+        LOAD(cuMemsetD32, "v2");
 
         /* By default, cholespy dispatches to the legacy CUDA stream. That
            makes it easier to reliably exchange information with packages that
@@ -121,7 +132,7 @@ bool init_cuda() {
     }
 
     cuda_check(cuInit(0));
-    cuda_check(cuDeviceGet(&cu_device, 0));
+    cuda_check(cuDeviceGet(&cu_device, device_id));
     cuda_check(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
     cuda_check(cuCtxPushCurrent(cu_context));
     cuda_check(cuModuleLoadData(&cu_module, (void *) imageBytes));

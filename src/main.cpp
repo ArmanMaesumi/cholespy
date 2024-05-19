@@ -23,7 +23,7 @@ void declare_cholesky(nb::module_ &m, const std::string &typestr, const char *do
                             nb::ndarray<int32_t, nb::shape<nb::any>, nb::c_contig> ii,
                             nb::ndarray<int32_t, nb::shape<nb::any>, nb::c_contig> jj,
                             nb::ndarray<double, nb::shape<nb::any>, nb::c_contig> x,
-                            MatrixType type) {
+                            MatrixType type, bool pin_memory) {
 
             if (type == MatrixType::COO){
                 if (ii.shape(0) != jj.shape(0))
@@ -48,7 +48,7 @@ void declare_cholesky(nb::module_ &m, const std::string &typestr, const char *do
                 // GPU init
 
                 // Initialize CUDA and load the kernels if not already done
-                init_cuda();
+                init_cuda(ii.device_id());
 
                 scoped_set_context guard(cu_context);
 
@@ -60,14 +60,14 @@ void declare_cholesky(nb::module_ &m, const std::string &typestr, const char *do
                 cuda_check(cuMemcpyAsync((CUdeviceptr) indices_b, (CUdeviceptr) jj.data(), jj.shape(0)*sizeof(int), 0));
                 cuda_check(cuMemcpyAsync((CUdeviceptr) data, (CUdeviceptr) x.data(), x.shape(0)*sizeof(double), 0));
 
-                new (self) Class(n_rows, x.shape(0), indices_a, indices_b, data, type, false);
+                new (self) Class(n_rows, x.shape(0), indices_a, indices_b, data, type, false, pin_memory);
 
                 free(indices_a);
                 free(indices_b);
                 free(data);
             } else if (ii.device_type() == nb::device::cpu::value) {
                 // CPU init
-                new (self) Class(n_rows, x.shape(0), (int *) ii.data(), (int *) jj.data(), (double *) x.data(), type, true);
+                new (self) Class(n_rows, x.shape(0), (int *) ii.data(), (int *) jj.data(), (double *) x.data(), type, true, false);
             } else
                 throw std::invalid_argument("Unsupported input device! Only CPU and CUDA arrays are supported.");
         },
@@ -76,6 +76,7 @@ void declare_cholesky(nb::module_ &m, const std::string &typestr, const char *do
         nb::arg("jj"),
         nb::arg("x"),
         nb::arg("type"),
+        nb::arg("pin_memory"),
         doc_constructor)
         .def("solve", [](Class &self,
                         nb::ndarray<Float, nb::c_contig> b,
@@ -107,7 +108,11 @@ void declare_cholesky(nb::module_ &m, const std::string &typestr, const char *do
         },
         nb::arg("b").noconvert(),
         nb::arg("x").noconvert(),
-        doc_solve);
+        doc_solve)
+        .def("cleanup", &Class::deallocate_memory)
+        .def("to_cpu", &Class::move_memory_to_host)
+        .def("to_cuda", &Class::move_memory_to_device)
+        .def("to_gpu", &Class::move_memory_to_device);
 }
 
 NB_MODULE(_cholespy_core, m_) {
