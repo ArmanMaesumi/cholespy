@@ -431,7 +431,7 @@ void CholeskySolver<Float>::launch_kernel(bool lower, CUdeviceptr x) {
 
 template <typename Float>
 void CholeskySolver<Float>::solve_cuda(int n_rhs, CUdeviceptr b, CUdeviceptr x) {
-    if (n_rhs != m_nrhs) {
+    if (n_rhs != m_nrhs || m_tmp_d == nullptr) {
         if (n_rhs > 128)
             throw std::invalid_argument("The number of RHS should be less than 128.");
         // We need to modify the allocated memory for the solution
@@ -567,6 +567,9 @@ void CholeskySolver<Float>::move_memory_to_host() {
     // These two need to be re-allocated later, but we dont need to save their values
     cuda_check(cuMemFree(m_processed_rows_d));
     cuda_check(cuMemFree(m_stack_id_d));
+    cuda_check(cuMemFree(m_tmp_d));
+
+    m_tmp_d = nullptr;
 
     m_on_host = true;
 }
